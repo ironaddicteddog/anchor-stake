@@ -1,0 +1,14 @@
+[programs.localnet]
+lockup = "4zWfTjGii94ERMbCCTH5ddKbAE8PXYhDjuBVvh1RD8bu"
+registry = "Q1MvTdvDuCnLTgcrbv4Bz6MBjb7cX1z93gb8FCs3eWe"
+registry_realizor = "HhrjsMDYycizDsjR6EMggPGg2KGbt6Y695C3s6xwTkqM"
+
+[registry]
+url = "https://anchor.projectserum.com"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"

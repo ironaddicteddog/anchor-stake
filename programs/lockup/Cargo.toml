@@ -1,0 +1,21 @@
+[package]
+description = "Created with Anchor"
+edition = "2021"
+name = "lockup"
+version = "0.1.0"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "lockup"
+
+[features]
+cpi = ["no-entrypoint"]
+default = []
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+
+[dependencies]
+anchor-lang = "0.20.1"
+anchor-spl = "0.20.1"
+registry_realizor = {path = "../registry_realizor", features = ["cpi"]}
