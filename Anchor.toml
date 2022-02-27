@@ -1,13 +1,14 @@
 [programs.localnet]
-lockup = "4zWfTjGii94ERMbCCTH5ddKbAE8PXYhDjuBVvh1RD8bu"
-registry = "Q1MvTdvDuCnLTgcrbv4Bz6MBjb7cX1z93gb8FCs3eWe"
-registry_realizor = "HhrjsMDYycizDsjR6EMggPGg2KGbt6Y695C3s6xwTkqM"
+lockup = "DCrDvbtuqxFiAgTz7JrDy5c1PiuZkgfphyGUTpq2L2eW"
+registry = "E9a8yDKJMRDGS7SNJpJGF9mJAK1K2knvqHcWriBK6JRZ"
+registry_realizor = "6YHjQ62tRTRho5tkFdtMX9rQod2RkwZMz2VfSiGwK9v7"
 
 [registry]
 url = "https://anchor.projectserum.com"
 
 [provider]
 cluster = "localnet"
+# cluster = "https://rpc-mainnet-fork.dappio.xyz"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

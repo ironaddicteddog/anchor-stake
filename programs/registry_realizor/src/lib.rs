@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::TokenAccount;
 use std::convert::Into;
 
-declare_id!("HhrjsMDYycizDsjR6EMggPGg2KGbt6Y695C3s6xwTkqM");
+declare_id!("6YHjQ62tRTRho5tkFdtMX9rQod2RkwZMz2VfSiGwK9v7");
 
 #[program]
 mod registry_realizor {
@@ -12,7 +12,7 @@ mod registry_realizor {
         ctx: Context<IsRealized>,
         v: Vesting,
         member_data: MemberData,
-    ) -> ProgramResult {
+    ) -> Result<()> {
         // Secutiry Check
         assert!(member_data.balances_spt == *ctx.accounts.member_spt.to_account_info().key);
         assert!(
@@ -43,6 +43,7 @@ pub struct IsRealized<'info> {
     //     "&member.balances_locked.spt == member_spt_locked.to_account_info().key"
     // )]
     // pub member: Box<Account<'info, Member>>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     pub member: AccountInfo<'info>,
     pub member_spt: Account<'info, TokenAccount>,
     pub member_spt_locked: Account<'info, TokenAccount>,
@@ -135,7 +136,7 @@ pub struct Realizor {
     pub metadata: Pubkey,
 }
 
-#[error]
+#[error_code]
 pub enum ErrorCode {
     #[msg("Locked rewards cannot be realized until one unstaked all tokens.")]
     UnrealizedReward,

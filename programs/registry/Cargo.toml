@@ -16,7 +16,7 @@ no-idl = []
 no-log-ix-name = []
 
 [dependencies]
-anchor-lang = "0.20.1"
-anchor-spl = "0.20.1"
+anchor-lang = "0.22.0"
+anchor-spl = "0.22.0"
 lockup = {path = "../lockup", features = ["cpi"]}
-solana-program = "1.9.5"
+solana-program = "1.9.9"

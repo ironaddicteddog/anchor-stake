@@ -4,10 +4,11 @@ use anchor_lang::{
 };
 use anchor_spl::token::{self, TokenAccount, Transfer};
 use registry_realizor::IsRealized;
+use std::collections::BTreeMap;
 
 mod calculator;
 
-declare_id!("4zWfTjGii94ERMbCCTH5ddKbAE8PXYhDjuBVvh1RD8bu");
+declare_id!("DCrDvbtuqxFiAgTz7JrDy5c1PiuZkgfphyGUTpq2L2eW");
 
 #[program]
 pub mod lockup {
@@ -15,7 +16,7 @@ pub mod lockup {
 
     pub const WHITELIST_SIZE: usize = 10;
 
-    pub fn whitelist_new(ctx: Context<WhitelistNew>, _bump: u8) -> ProgramResult {
+    pub fn whitelist_new(ctx: Context<WhitelistNew>, _bump: u8) -> Result<()> {
         let mut whitelist = vec![];
         whitelist.resize(WHITELIST_SIZE, Default::default());
         ctx.accounts.lockup.authority = *ctx.accounts.authority.key;
@@ -25,7 +26,7 @@ pub mod lockup {
     }
 
     #[access_control(whitelist_auth(&ctx))]
-    pub fn whitelist_add(ctx: Context<Auth>, _bump: u8, entry: WhitelistEntry) -> ProgramResult {
+    pub fn whitelist_add(ctx: Context<Auth>, _bump: u8, entry: WhitelistEntry) -> Result<()> {
         if ctx.accounts.lockup.whitelist.len() == WHITELIST_SIZE {
             return Err(ErrorCode::WhitelistFull.into());
         }
@@ -38,7 +39,7 @@ pub mod lockup {
     }
 
     #[access_control(whitelist_auth(&ctx))]
-    pub fn whitelist_delete(ctx: Context<Auth>, _bump: u8, entry: WhitelistEntry) -> ProgramResult {
+    pub fn whitelist_delete(ctx: Context<Auth>, _bump: u8, entry: WhitelistEntry) -> Result<()> {
         if !ctx.accounts.lockup.whitelist.contains(&entry) {
             return Err(ErrorCode::WhitelistEntryNotFound.into());
         }
@@ -48,7 +49,7 @@ pub mod lockup {
     }
 
     #[access_control(whitelist_auth(&ctx))]
-    pub fn set_authority(ctx: Context<Auth>, _bump: u8, new_authority: Pubkey) -> ProgramResult {
+    pub fn set_authority(ctx: Context<Auth>, _bump: u8, new_authority: Pubkey) -> Result<()> {
         ctx.accounts.lockup.authority = new_authority;
 
         Ok(())
@@ -64,7 +65,7 @@ pub mod lockup {
         end_ts: i64,
         period_count: u64,
         realizor: Option<Realizor>,
-    ) -> ProgramResult {
+    ) -> Result<()> {
         if deposit_amount == 0 {
             return Err(ErrorCode::InvalidDepositAmount.into());
         }
@@ -92,7 +93,7 @@ pub mod lockup {
     }
 
     #[access_control(is_realized(&ctx))]
-    pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> ProgramResult {
+    pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
         // Has the given amount vested?
         if amount
             > calculator::available_for_withdrawal(
@@ -124,7 +125,7 @@ pub mod lockup {
         ctx: Context<'a, 'b, 'c, 'info, WhitelistWithdraw<'info>>,
         instruction_data: Vec<u8>,
         amount: u64,
-    ) -> ProgramResult {
+    ) -> Result<()> {
         let before_amount = ctx.accounts.transfer.vault.amount;
         whitelist_relay_cpi(
             &ctx.accounts.transfer,
@@ -149,7 +150,7 @@ pub mod lockup {
     pub fn whitelist_deposit<'a, 'b, 'c, 'info>(
         ctx: Context<'a, 'b, 'c, 'info, WhitelistDeposit<'info>>,
         instruction_data: Vec<u8>,
-    ) -> ProgramResult {
+    ) -> Result<()> {
         let before_amount = ctx.accounts.transfer.vault.amount;
         whitelist_relay_cpi(
             &ctx.accounts.transfer,
@@ -174,7 +175,7 @@ pub mod lockup {
     }
 
     // Convenience function for UI's to calculate the withdrawable amount.
-    pub fn available_for_withdrawal(ctx: Context<AvailableForWithdrawal>) -> ProgramResult {
+    pub fn available_for_withdrawal(ctx: Context<AvailableForWithdrawal>) -> Result<()> {
         let available = calculator::available_for_withdrawal(
             &ctx.accounts.vesting,
             ctx.accounts.clock.unix_timestamp,
@@ -197,22 +198,25 @@ pub struct Lockup {
 #[derive(Accounts)]
 #[instruction(lockup_bump: u8)]
 pub struct WhitelistNew<'info> {
-    #[account(signer)]
+    /// CHECK: This is not dangerous because we don't read or write from this account
+    #[account(mut, signer)]
     pub authority: AccountInfo<'info>,
     #[account(
         init,
         seeds = [b"lockup".as_ref()],
-        bump = lockup_bump,
+        bump,
         payer = authority,
         space = 1000
     )]
     pub lockup: Box<Account<'info, Lockup>>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     pub system_program: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
 #[instruction(lockup_bump: u8)]
 pub struct Auth<'info> {
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     pub authority: AccountInfo<'info>,
     #[account(
@@ -231,11 +235,14 @@ pub struct CreateVesting<'info> {
     #[account(mut)]
     pub vault: Account<'info, TokenAccount>,
     // Depositor.
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     pub depositor: AccountInfo<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     pub depositor_authority: AccountInfo<'info>,
     // Misc.
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account("token_program.key == &token::ID")]
     pub token_program: AccountInfo<'info>,
     pub rent: Sysvar<'info, Rent>,
@@ -243,7 +250,7 @@ pub struct CreateVesting<'info> {
 }
 
 impl<'info> CreateVesting<'info> {
-    fn accounts(ctx: &Context<CreateVesting>, nonce: u8) -> ProgramResult {
+    fn accounts(ctx: &Context<CreateVesting>, nonce: u8) -> Result<()> {
         let vault_authority = Pubkey::create_program_address(
             &[
                 ctx.accounts.vesting.to_account_info().key.as_ref(),
@@ -267,16 +274,19 @@ pub struct Withdraw<'info> {
     // Vesting.
     #[account(mut, has_one = beneficiary, has_one = vault)]
     vesting: Box<Account<'info, Vesting>>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     beneficiary: AccountInfo<'info>,
     #[account(mut)]
     vault: Account<'info, TokenAccount>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(seeds = [vesting.to_account_info().key.as_ref()], bump = vesting.nonce)]
     vesting_signer: AccountInfo<'info>,
     // Withdraw receiving target..
     #[account(mut)]
     token: Account<'info, TokenAccount>,
     // Misc.
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account("token_program.key == &token::ID")]
     token_program: AccountInfo<'info>,
     clock: Sysvar<'info, Clock>,
@@ -298,8 +308,10 @@ pub struct WhitelistTransfer<'info> {
     #[account(seeds = [b"lockup".as_ref()], bump = lockup_bump)]
     lockup: Box<Account<'info, Lockup>>,
     // lockup: ProgramState<'info, Lockup>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     beneficiary: AccountInfo<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     whitelisted_program: AccountInfo<'info>,
 
     // Whitelist interface.
@@ -307,12 +319,16 @@ pub struct WhitelistTransfer<'info> {
     vesting: Box<Account<'info, Vesting>>,
     #[account(mut, "&vault.owner == vesting_signer.key")]
     vault: Account<'info, TokenAccount>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(seeds = [vesting.to_account_info().key.as_ref()], bump = vesting.nonce)]
     vesting_signer: AccountInfo<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account("token_program.key == &token::ID")]
     token_program: AccountInfo<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     whitelisted_program_vault: AccountInfo<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     whitelisted_program_vault_authority: AccountInfo<'info>,
 }
 
@@ -381,7 +397,7 @@ pub struct WhitelistEntry {
     pub program_id: Pubkey,
 }
 
-#[error]
+#[error_code]
 pub enum ErrorCode {
     #[msg("Vesting end must be greater than the current unix timestamp.")]
     InvalidTimestamp,
@@ -454,7 +470,7 @@ pub fn whitelist_relay_cpi<'info>(
     transfer: &WhitelistTransfer<'info>,
     remaining_accounts: &[AccountInfo<'info>],
     instruction_data: Vec<u8>,
-) -> ProgramResult {
+) -> Result<()> {
     let mut meta_accounts = vec![
         AccountMeta::new_readonly(*transfer.vesting.to_account_info().key, false),
         AccountMeta::new(*transfer.vault.to_account_info().key, false),
@@ -495,7 +511,7 @@ pub fn whitelist_relay_cpi<'info>(
     invoke_signed(&relay_instruction, &accounts, signer).map_err(Into::into)
 }
 
-pub fn is_whitelisted<'info>(transfer: &WhitelistTransfer<'info>) -> ProgramResult {
+pub fn is_whitelisted<'info>(transfer: &WhitelistTransfer<'info>) -> Result<()> {
     if !transfer.lockup.whitelist.contains(&WhitelistEntry {
         program_id: *transfer.whitelisted_program.key,
     }) {
@@ -511,7 +527,7 @@ pub fn is_whitelisted<'info>(transfer: &WhitelistTransfer<'info>) -> ProgramResu
 //     Ok(())
 // }
 
-fn whitelist_auth(ctx: &Context<Auth>) -> ProgramResult {
+fn whitelist_auth(ctx: &Context<Auth>) -> Result<()> {
     if ctx.accounts.lockup.authority != *ctx.accounts.authority.key {
         return Err(ErrorCode::Unauthorized.into());
     }
@@ -534,7 +550,7 @@ pub fn is_valid_schedule(start_ts: i64, end_ts: i64, period_count: u64) -> bool 
 // Returns Ok if the locked vesting account has been "realized". Realization
 // is application dependent. For example, in the case of staking, one must first
 // unstake before being able to earn locked tokens.
-fn is_realized(ctx: &Context<Withdraw>) -> ProgramResult {
+fn is_realized(ctx: &Context<Withdraw>) -> Result<()> {
     if let Some(realizor) = &ctx.accounts.vesting.realizor {
         let cpi_program = {
             let p = ctx.remaining_accounts[0].clone();
@@ -545,12 +561,14 @@ fn is_realized(ctx: &Context<Withdraw>) -> ProgramResult {
         };
         let registry_program = ctx.remaining_accounts[1].clone();
         // let cpi_accounts = ctx.remaining_accounts.to_vec()[1..].to_vec();
+        let mut bumps = BTreeMap::new();
         let cpi_accounts = {
             let accs = IsRealized::try_accounts(
                 // cpi_program.key,
                 registry_program.key,
                 &mut &ctx.remaining_accounts.to_vec()[2..=4],
                 &[],
+                &mut bumps,
             )?;
             registry_realizor::cpi::accounts::IsRealized {
                 member: accs.member.to_account_info(),
@@ -605,5 +623,5 @@ fn is_realized(ctx: &Context<Withdraw>) -> ProgramResult {
 /// until one has completely unstaked.
 #[interface]
 pub trait RealizeLock<'info, T: Accounts<'info>> {
-    fn is_realized(ctx: Context<T>, v: Vesting) -> ProgramResult;
+    fn is_realized(ctx: Context<T>, v: Vesting) -> Result<()>;
 }

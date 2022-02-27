@@ -2,15 +2,16 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program_option::COption;
 use anchor_spl::token::{self, Mint, TokenAccount, Transfer};
 use lockup::{CreateVesting, Realizor, Vesting};
+use std::collections::BTreeMap;
 use std::convert::Into;
 
-declare_id!("Q1MvTdvDuCnLTgcrbv4Bz6MBjb7cX1z93gb8FCs3eWe");
+declare_id!("E9a8yDKJMRDGS7SNJpJGF9mJAK1K2knvqHcWriBK6JRZ");
 
 #[program]
 mod registry {
     use super::*;
 
-    pub fn new_registry(ctx: Context<NewRegistry>, _bump: u8) -> ProgramResult {
+    pub fn new_registry(ctx: Context<NewRegistry>, _bump: u8) -> Result<()> {
         ctx.accounts.registry.lockup_program = *ctx.accounts.lockup_program.key;
         ctx.accounts.registry.realizor_program = *ctx.accounts.realizor_program.key;
 
@@ -20,7 +21,7 @@ mod registry {
     pub fn set_lockup_program(
         ctx: Context<SetLockupProgram>,
         lockup_program: Pubkey,
-    ) -> ProgramResult {
+    ) -> Result<()> {
         // Hard code the authority because the first version of this program
         // did not set an authority account in the global state.
         //
@@ -47,7 +48,7 @@ mod registry {
         withdrawal_timelock: i64,
         stake_rate: u64,
         reward_q_len: u32,
-    ) -> ProgramResult {
+    ) -> Result<()> {
         let registrar = &mut ctx.accounts.registrar;
 
         registrar.authority = authority;
@@ -70,7 +71,7 @@ mod registry {
         ctx: Context<UpdateRegistrar>,
         new_authority: Option<Pubkey>,
         withdrawal_timelock: Option<i64>,
-    ) -> ProgramResult {
+    ) -> Result<()> {
         let registrar = &mut ctx.accounts.registrar;
 
         if let Some(new_authority) = new_authority {
@@ -85,7 +86,7 @@ mod registry {
     }
 
     #[access_control(CreateMember::accounts(&ctx, nonce))]
-    pub fn create_member(ctx: Context<CreateMember>, nonce: u8) -> ProgramResult {
+    pub fn create_member(ctx: Context<CreateMember>, nonce: u8) -> Result<()> {
         let member = &mut ctx.accounts.member;
         member.registrar = *ctx.accounts.registrar.to_account_info().key;
         member.beneficiary = *ctx.accounts.beneficiary.key;
@@ -96,7 +97,7 @@ mod registry {
     }
 
     #[access_control(UpdateMemberBalances::accounts(&ctx, nonce))]
-    pub fn update_member_balances(ctx: Context<UpdateMemberBalances>, nonce: u8) -> ProgramResult {
+    pub fn update_member_balances(ctx: Context<UpdateMemberBalances>, nonce: u8) -> Result<()> {
         let member = &mut ctx.accounts.member;
         member.balances = (&ctx.accounts.balances).into();
         Ok(())
@@ -106,13 +107,13 @@ mod registry {
     pub fn update_member_balances_lock(
         ctx: Context<UpdateMemberBalancesLock>,
         nonce: u8,
-    ) -> ProgramResult {
+    ) -> Result<()> {
         let member = &mut ctx.accounts.member;
         member.balances_locked = (&ctx.accounts.balances_locked).into();
         Ok(())
     }
 
-    pub fn update_member(ctx: Context<UpdateMember>, metadata: Option<Pubkey>) -> ProgramResult {
+    pub fn update_member(ctx: Context<UpdateMember>, metadata: Option<Pubkey>) -> Result<()> {
         let member = &mut ctx.accounts.member;
         if let Some(m) = metadata {
             member.metadata = m;
@@ -121,12 +122,12 @@ mod registry {
     }
 
     // Deposits that can only come directly from the member beneficiary.
-    pub fn deposit(ctx: Context<Deposit>, amount: u64) -> ProgramResult {
+    pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
         token::transfer(ctx.accounts.into(), amount).map_err(Into::into)
     }
 
     // Deposits that can only come from the beneficiary's vesting accounts.
-    pub fn deposit_locked(ctx: Context<DepositLocked>, _bump: u8, amount: u64) -> ProgramResult {
+    pub fn deposit_locked(ctx: Context<DepositLocked>, _bump: u8, amount: u64) -> Result<()> {
         token::transfer(ctx.accounts.into(), amount).map_err(Into::into)
     }
 
@@ -136,7 +137,7 @@ mod registry {
         &ctx.accounts.balances,
         // &ctx.accounts.balances_locked,
     ))]
-    pub fn stake(ctx: Context<Stake>, spt_amount: u64) -> ProgramResult {
+    pub fn stake(ctx: Context<Stake>, spt_amount: u64) -> Result<()> {
         // let balances = {
         //     if locked {
         //         &ctx.accounts.balances_locked
@@ -202,11 +203,7 @@ mod registry {
         &ctx.accounts.balances,
         // &ctx.accounts.balances_locked,
     ))]
-    pub fn start_unstake(
-        ctx: Context<StartUnstake>,
-        spt_amount: u64,
-        locked: bool,
-    ) -> ProgramResult {
+    pub fn start_unstake(ctx: Context<StartUnstake>, spt_amount: u64, locked: bool) -> Result<()> {
         // let balances = {
         //     if locked {
         //         &ctx.accounts.balances_locked
@@ -275,7 +272,7 @@ mod registry {
         Ok(())
     }
 
-    pub fn end_unstake(ctx: Context<EndUnstake>) -> ProgramResult {
+    pub fn end_unstake(ctx: Context<EndUnstake>) -> Result<()> {
         if ctx.accounts.pending_withdrawal.end_ts > ctx.accounts.clock.unix_timestamp {
             return Err(ErrorCode::UnstakeTimelock.into());
         }
@@ -323,7 +320,7 @@ mod registry {
         Ok(())
     }
 
-    pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> ProgramResult {
+    pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
         let seeds = &[
             ctx.accounts.registrar.to_account_info().key.as_ref(),
             ctx.accounts.member.to_account_info().key.as_ref(),
@@ -341,7 +338,7 @@ mod registry {
         token::transfer(cpi_ctx, amount).map_err(Into::into)
     }
 
-    pub fn withdraw_locked(ctx: Context<WithdrawLocked>, _bump: u8, amount: u64) -> ProgramResult {
+    pub fn withdraw_locked(ctx: Context<WithdrawLocked>, _bump: u8, amount: u64) -> Result<()> {
         let seeds = &[
             ctx.accounts.registrar.to_account_info().key.as_ref(),
             ctx.accounts.member.to_account_info().key.as_ref(),
@@ -367,7 +364,7 @@ mod registry {
         expiry_ts: i64,
         expiry_receiver: Pubkey,
         nonce: u8,
-    ) -> ProgramResult {
+    ) -> Result<()> {
         if total < ctx.accounts.pool_mint.supply {
             return Err(ErrorCode::InsufficientReward.into());
         }
@@ -445,7 +442,7 @@ mod registry {
     }
 
     #[access_control(reward_eligible(&ctx.accounts.cmn))]
-    pub fn claim_reward(ctx: Context<ClaimReward>) -> ProgramResult {
+    pub fn claim_reward(ctx: Context<ClaimReward>) -> Result<()> {
         if RewardVendorKind::Unlocked != ctx.accounts.cmn.vendor.kind {
             return Err(ErrorCode::ExpectedUnlockedVendor.into());
         }
@@ -489,7 +486,7 @@ mod registry {
         ctx: Context<'a, 'b, 'c, 'info, ClaimRewardLocked<'info>>,
         _bump: u8,
         nonce: u8,
-    ) -> ProgramResult {
+    ) -> Result<()> {
         let (start_ts, end_ts, period_count) = match ctx.accounts.cmn.vendor.kind {
             RewardVendorKind::Unlocked => return Err(ErrorCode::ExpectedLockedVendor.into()),
             RewardVendorKind::Locked {
@@ -539,11 +536,13 @@ mod registry {
         ][..];
 
         let cpi_program = ctx.accounts.lockup_program.clone();
+        let mut bumps = BTreeMap::new();
         let cpi_accounts = {
             let accs = CreateVesting::try_accounts(
                 ctx.accounts.lockup_program.key,
                 &mut new_remaining_accounts,
                 &[],
+                &mut bumps,
             )?;
             lockup::cpi::accounts::CreateVesting {
                 vesting: accs.vesting.to_account_info(),
@@ -574,7 +573,7 @@ mod registry {
         Ok(())
     }
 
-    pub fn expire_reward(ctx: Context<ExpireReward>) -> ProgramResult {
+    pub fn expire_reward(ctx: Context<ExpireReward>) -> Result<()> {
         if ctx.accounts.clock.unix_timestamp < ctx.accounts.vendor.expiry_ts {
             return Err(ErrorCode::VendorNotYetExpired.into());
         }
@@ -605,7 +604,7 @@ mod registry {
     }
 
     // impl<'info> RealizeLock<'info, IsRealized<'info>> for Registry {
-    //     fn is_realized(ctx: Context<IsRealized>, v: Vesting) -> ProgramResult {
+    //     fn is_realized(ctx: Context<IsRealized>, v: Vesting) -> Result<()> {
     //         if let Some(realizor) = &v.realizor {
     //             if &realizor.metadata != ctx.accounts.member.to_account_info().key {
     //                 return Err(ErrorCode::InvalidRealizorMetadata.into());
@@ -640,7 +639,7 @@ pub struct Initialize<'info> {
 }
 
 impl<'info> Initialize<'info> {
-    fn accounts(ctx: &Context<Initialize<'info>>, nonce: u8) -> ProgramResult {
+    fn accounts(ctx: &Context<Initialize<'info>>, nonce: u8) -> Result<()> {
         let registrar_signer = Pubkey::create_program_address(
             &[
                 ctx.accounts.registrar.to_account_info().key.as_ref(),
@@ -661,6 +660,7 @@ impl<'info> Initialize<'info> {
 pub struct UpdateRegistrar<'info> {
     #[account(mut, has_one = authority)]
     registrar: Box<Account<'info, Registrar>>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     authority: AccountInfo<'info>,
 }
@@ -672,6 +672,7 @@ pub struct CreateMember<'info> {
     // Member.
     #[account(zero)]
     member: Box<Account<'info, Member>>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     beneficiary: AccountInfo<'info>,
     // #[account(
@@ -686,15 +687,17 @@ pub struct CreateMember<'info> {
     //     "balances_locked.vault.mint == registrar.mint"
     // )]
     // balances_locked: BalanceSandboxAccounts<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     member_signer: AccountInfo<'info>,
     // Misc.
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account("token_program.key == &token::ID")]
     token_program: AccountInfo<'info>,
     rent: Sysvar<'info, Rent>,
 }
 
 impl<'info> CreateMember<'info> {
-    fn accounts(ctx: &Context<CreateMember>, nonce: u8) -> ProgramResult {
+    fn accounts(ctx: &Context<CreateMember>, nonce: u8) -> Result<()> {
         let seeds = &[
             ctx.accounts.registrar.to_account_info().key.as_ref(),
             ctx.accounts.member.to_account_info().key.as_ref(),
@@ -721,11 +724,12 @@ pub struct UpdateMemberBalances<'info> {
         "balances.vault.mint == registrar.mint"
     )]
     balances: BalanceSandboxAccounts<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     member_signer: AccountInfo<'info>,
 }
 
 impl<'info> UpdateMemberBalances<'info> {
-    fn accounts(ctx: &Context<UpdateMemberBalances>, nonce: u8) -> ProgramResult {
+    fn accounts(ctx: &Context<UpdateMemberBalances>, nonce: u8) -> Result<()> {
         let seeds = &[
             ctx.accounts.registrar.to_account_info().key.as_ref(),
             ctx.accounts.member.to_account_info().key.as_ref(),
@@ -752,11 +756,12 @@ pub struct UpdateMemberBalancesLock<'info> {
         "balances_locked.vault.mint == registrar.mint"
     )]
     balances_locked: BalanceSandboxAccounts<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     member_signer: AccountInfo<'info>,
 }
 
 impl<'info> UpdateMemberBalancesLock<'info> {
-    fn accounts(ctx: &Context<UpdateMemberBalancesLock>, nonce: u8) -> ProgramResult {
+    fn accounts(ctx: &Context<UpdateMemberBalancesLock>, nonce: u8) -> Result<()> {
         let seeds = &[
             ctx.accounts.registrar.to_account_info().key.as_ref(),
             ctx.accounts.member.to_account_info().key.as_ref(),
@@ -780,40 +785,45 @@ impl<'info> UpdateMemberBalancesLock<'info> {
 #[derive(Accounts, Clone)]
 pub struct BalanceSandboxAccounts<'info> {
     #[account(mut)]
-    spt: Account<'info, TokenAccount>,
+    spt: Box<Account<'info, TokenAccount>>,
     #[account(mut, "vault.owner == spt.owner")]
-    vault: Account<'info, TokenAccount>,
+    vault: Box<Account<'info, TokenAccount>>,
     #[account(
         mut,
         "vault_stake.owner == spt.owner",
         "vault_stake.mint == vault.mint"
     )]
-    vault_stake: Account<'info, TokenAccount>,
+    vault_stake: Box<Account<'info, TokenAccount>>,
     #[account(mut, "vault_pw.owner == spt.owner", "vault_pw.mint == vault.mint")]
-    vault_pw: Account<'info, TokenAccount>,
+    vault_pw: Box<Account<'info, TokenAccount>>,
 }
 
 #[derive(Accounts)]
 #[instruction(registry_bump: u8)]
 pub struct NewRegistry<'info> {
-    #[account(signer)]
+    /// CHECK: This is not dangerous because we don't read or write from this account
+    #[account(mut, signer)]
     pub authority: AccountInfo<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     pub lockup_program: AccountInfo<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     pub realizor_program: AccountInfo<'info>,
     #[account(
         init,
         seeds = [b"registry".as_ref()],
-        bump = registry_bump,
+        bump,
         payer = authority,
         space = 1000
     )]
     pub registry: Box<Account<'info, Registry>>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     pub system_program: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
 #[instruction(registry_bump: u8)]
 pub struct SetLockupProgram<'info> {
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     pub authority: AccountInfo<'info>,
     #[account(
@@ -839,6 +849,7 @@ pub struct SetLockupProgram<'info> {
 pub struct UpdateMember<'info> {
     #[account(mut, has_one = beneficiary)]
     member: Box<Account<'info, Member>>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     beneficiary: AccountInfo<'info>,
 }
@@ -848,16 +859,20 @@ pub struct Deposit<'info> {
     // Member.
     #[account(has_one = beneficiary)]
     member: Box<Account<'info, Member>>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     beneficiary: AccountInfo<'info>,
     #[account(mut, "vault.to_account_info().key == &member.balances.vault")]
     vault: Account<'info, TokenAccount>,
     // Depositor.
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     depositor: AccountInfo<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer, "depositor_authority.key == &member.beneficiary")]
     depositor_authority: AccountInfo<'info>,
     // Misc.
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account("token_program.key == &token::ID")]
     token_program: AccountInfo<'info>,
 }
@@ -871,12 +886,15 @@ pub struct DepositLocked<'info> {
         "vesting.beneficiary == member.beneficiary"
     )]
     vesting: Account<'info, Vesting>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut, "vesting_vault.key == &vesting.vault")]
     vesting_vault: AccountInfo<'info>,
     // Note: no need to verify the depositor_authority since the SPL program
     //       will fail the transaction if it's not correct.
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     depositor_authority: AccountInfo<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account("token_program.key == &token::ID")]
     token_program: AccountInfo<'info>,
     #[account(
@@ -884,6 +902,7 @@ pub struct DepositLocked<'info> {
         "member_vault.to_account_info().key == &member.balances_locked.vault"
     )]
     member_vault: Account<'info, TokenAccount>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(
         seeds = [
             registrar.to_account_info().key.as_ref(),
@@ -901,6 +920,7 @@ pub struct DepositLocked<'info> {
     registrar: Box<Account<'info, Registrar>>,
     #[account(has_one = registrar, has_one = beneficiary)]
     member: Box<Account<'info, Member>>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     beneficiary: AccountInfo<'info>,
 }
@@ -912,11 +932,12 @@ pub struct Stake<'info> {
     registrar: Box<Account<'info, Registrar>>,
     reward_event_q: Box<Account<'info, RewardQueue>>,
     #[account(mut)]
-    pool_mint: Account<'info, Mint>,
+    pool_mint: Box<Account<'info, Mint>>,
 
     // Member.
     #[account(mut, has_one = beneficiary, has_one = registrar)]
     member: Box<Account<'info, Member>>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     beneficiary: AccountInfo<'info>,
     #[account("BalanceSandbox::from(&balances) == member.balances")]
@@ -925,6 +946,7 @@ pub struct Stake<'info> {
     // balances_locked: BalanceSandboxAccounts<'info>,
 
     // Program signers.
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(
         seeds = [
             registrar.to_account_info().key.as_ref(),
@@ -933,11 +955,13 @@ pub struct Stake<'info> {
         bump = member.nonce
     )]
     member_signer: AccountInfo<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(seeds = [registrar.to_account_info().key.as_ref()], bump = registrar.nonce)]
     registrar_signer: AccountInfo<'info>,
 
     // Misc.
     clock: Sysvar<'info, Clock>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account("token_program.key == &token::ID")]
     token_program: AccountInfo<'info>,
 }
@@ -948,6 +972,7 @@ pub struct StartUnstake<'info> {
     #[account(has_one = reward_event_q, has_one = pool_mint)]
     registrar: Box<Account<'info, Registrar>>,
     reward_event_q: Box<Account<'info, RewardQueue>>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     pool_mint: AccountInfo<'info>,
 
@@ -956,6 +981,7 @@ pub struct StartUnstake<'info> {
     pending_withdrawal: Box<Account<'info, PendingWithdrawal>>,
     #[account(has_one = beneficiary, has_one = registrar)]
     member: Box<Account<'info, Member>>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     beneficiary: AccountInfo<'info>,
     #[account("BalanceSandbox::from(&balances) == member.balances")]
@@ -964,6 +990,7 @@ pub struct StartUnstake<'info> {
     // balances_locked: BalanceSandboxAccounts<'info>,
 
     // Programmatic signers.
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(
         seeds = [
             registrar.to_account_info().key.as_ref(),
@@ -974,6 +1001,7 @@ pub struct StartUnstake<'info> {
     member_signer: AccountInfo<'info>,
 
     // Misc.
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account("token_program.key == &token::ID")]
     token_program: AccountInfo<'info>,
     clock: Sysvar<'info, Clock>,
@@ -986,6 +1014,7 @@ pub struct EndUnstake<'info> {
 
     #[account(has_one = registrar, has_one = beneficiary)]
     member: Box<Account<'info, Member>>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     beneficiary: AccountInfo<'info>,
     #[account(mut, has_one = registrar, has_one = member, "!pending_withdrawal.burned")]
@@ -995,11 +1024,14 @@ pub struct EndUnstake<'info> {
     // balances.get(pending_withdrawal.balance_id).vault == vault.key.
     //
     // Note: we do the constraints check in the handler, not here.
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     vault: AccountInfo<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     vault_pw: AccountInfo<'info>,
 
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(
         seeds = [
             registrar.to_account_info().key.as_ref(),
@@ -1010,6 +1042,7 @@ pub struct EndUnstake<'info> {
     member_signer: AccountInfo<'info>,
 
     clock: Sysvar<'info, Clock>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account("token_program.key == &token::ID")]
     token_program: AccountInfo<'info>,
 }
@@ -1021,10 +1054,12 @@ pub struct Withdraw<'info> {
     // Member.
     #[account(has_one = registrar, has_one = beneficiary)]
     member: Box<Account<'info, Member>>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     beneficiary: AccountInfo<'info>,
     #[account(mut, "vault.to_account_info().key == &member.balances.vault")]
     vault: Account<'info, TokenAccount>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(
         seeds = [
             registrar.to_account_info().key.as_ref(),
@@ -1034,9 +1069,11 @@ pub struct Withdraw<'info> {
     )]
     member_signer: AccountInfo<'info>,
     // Receiver.
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     depositor: AccountInfo<'info>,
     // Misc.
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account("token_program.key == &token::ID")]
     token_program: AccountInfo<'info>,
 }
@@ -1050,10 +1087,13 @@ pub struct WithdrawLocked<'info> {
         "vesting.beneficiary == member.beneficiary"
     )]
     vesting: Account<'info, Vesting>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut, "vesting_vault.key == &vesting.vault")]
     vesting_vault: AccountInfo<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     vesting_signer: AccountInfo<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account("token_program.key == &token::ID")]
     token_program: AccountInfo<'info>,
     #[account(
@@ -1061,6 +1101,7 @@ pub struct WithdrawLocked<'info> {
         "member_vault.to_account_info().key == &member.balances_locked.vault"
     )]
     member_vault: Account<'info, TokenAccount>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(
         seeds = [
             registrar.to_account_info().key.as_ref(),
@@ -1077,6 +1118,7 @@ pub struct WithdrawLocked<'info> {
     registrar: Box<Account<'info, Registrar>>,
     #[account(has_one = registrar, has_one = beneficiary)]
     member: Box<Account<'info, Member>>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     beneficiary: AccountInfo<'info>,
 }
@@ -1095,11 +1137,14 @@ pub struct DropReward<'info> {
     #[account(mut)]
     vendor_vault: Account<'info, TokenAccount>,
     // Depositor.
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     depositor: AccountInfo<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     depositor_authority: AccountInfo<'info>,
     // Misc.
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account("token_program.key == &token::ID")]
     token_program: AccountInfo<'info>,
     clock: Sysvar<'info, Clock>,
@@ -1107,7 +1152,7 @@ pub struct DropReward<'info> {
 }
 
 impl<'info> DropReward<'info> {
-    fn accounts(ctx: &Context<DropReward>, nonce: u8) -> ProgramResult {
+    fn accounts(ctx: &Context<DropReward>, nonce: u8) -> Result<()> {
         let vendor_signer = Pubkey::create_program_address(
             &[
                 ctx.accounts.registrar.to_account_info().key.as_ref(),
@@ -1129,6 +1174,7 @@ impl<'info> DropReward<'info> {
 pub struct ClaimReward<'info> {
     cmn: ClaimRewardCommon<'info>,
     // Account to send reward to.
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     to: AccountInfo<'info>,
 }
@@ -1140,8 +1186,10 @@ pub struct ClaimRewardLocked<'info> {
     #[account(seeds = [b"registry".as_ref()], bump = registry_bump)]
     registry: Box<Account<'info, Registry>>,
     // registry: ProgramState<'info, Registry>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account("lockup_program.key == &registry.lockup_program")]
     lockup_program: AccountInfo<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account("realizor_program.key == &registry.realizor_program")]
     realizor_program: AccountInfo<'info>,
 }
@@ -1154,6 +1202,7 @@ pub struct ClaimRewardCommon<'info> {
     // Member.
     #[account(mut, has_one = registrar, has_one = beneficiary)]
     member: Box<Account<'info, Member>>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     beneficiary: AccountInfo<'info>,
     // #[account("BalanceSandbox::from(&balances) == member.balances")]
@@ -1167,8 +1216,10 @@ pub struct ClaimRewardCommon<'info> {
     // Vendor.
     #[account(has_one = registrar, has_one = vault)]
     vendor: Box<Account<'info, RewardVendor>>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     vault: AccountInfo<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(
         seeds = [
             registrar.to_account_info().key.as_ref(),
@@ -1178,6 +1229,7 @@ pub struct ClaimRewardCommon<'info> {
     )]
     vendor_signer: AccountInfo<'info>,
     // Misc.
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account("token_program.key == &token::ID")]
     token_program: AccountInfo<'info>,
     clock: Sysvar<'info, Clock>,
@@ -1192,6 +1244,7 @@ pub struct ExpireReward<'info> {
     vendor: Box<Account<'info, RewardVendor>>,
     #[account(mut)]
     vault: Account<'info, TokenAccount>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(
         seeds = [
             registrar.to_account_info().key.as_ref(),
@@ -1201,11 +1254,14 @@ pub struct ExpireReward<'info> {
     )]
     vendor_signer: AccountInfo<'info>,
     // Receiver.
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(signer)]
     expiry_receiver: AccountInfo<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     expiry_receiver_token: AccountInfo<'info>,
     // Misc.
+    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account("token_program.key == &token::ID")]
     token_program: AccountInfo<'info>,
     clock: Sysvar<'info, Clock>,
@@ -1375,7 +1431,7 @@ pub enum RewardVendorKind {
     },
 }
 
-#[error]
+#[error_code]
 pub enum ErrorCode {
     #[msg("The given reward queue has already been initialized.")]
     RewardQAlreadyInitialized,
@@ -1484,7 +1540,7 @@ impl<'info> From<&BalanceSandboxAccounts<'info>> for BalanceSandbox {
     }
 }
 
-fn reward_eligible(cmn: &ClaimRewardCommon) -> ProgramResult {
+fn reward_eligible(cmn: &ClaimRewardCommon) -> Result<()> {
     let vendor = &cmn.vendor;
     let member = &cmn.member;
     if vendor.expired {
@@ -1506,7 +1562,7 @@ pub fn no_available_rewards<'info>(
     member: &Box<Account<'info, Member>>,
     balances: &BalanceSandboxAccounts<'info>,
     // balances_locked: &BalanceSandboxAccounts<'info>,
-) -> ProgramResult {
+) -> Result<()> {
     let mut cursor = member.rewards_cursor;
 
     // If the member's cursor is less then the tail, then the ring buffer has
