@@ -1,43 +1,77 @@
-import * as anchor from '@project-serum/anchor';
-import { Program } from '@project-serum/anchor';
-import NodeWallet from '@project-serum/anchor/dist/cjs/nodewallet';
-import { createMintAndVault, getTokenAccount, createTokenAccountInstrs, createMint, sleep, createTokenAccount } from '@project-serum/common';
-import { Lockup } from '../target/types/lockup';
-import { Registry } from '../target/types/registry';
-import { RegistryRealizor } from '../target/types/registry_realizor';
-import { PublicKey, SystemProgram, Keypair, Commitment, Connection } from '@solana/web3.js';
-import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import * as anchor from "@project-serum/anchor";
+import NodeWallet from "@project-serum/anchor/dist/cjs/nodewallet";
+import { IDL as lockupIDL } from "../target/types/lockup";
+import { IDL as registryIDL } from "../target/types/registry";
+import { IDL as realizorIDL } from "../target/types/registry_realizor";
+import {
+  PublicKey,
+  SystemProgram,
+  Keypair,
+  Commitment,
+  Connection,
+} from "@solana/web3.js";
+import * as splToken from "@solana/spl-token";
 // import { assert } from 'chai';
-import assert from 'assert';
-import { createBalanceSandbox } from "./utils";
-import { SendTxRequest } from '@project-serum/anchor/dist/cjs/provider';
+import assert from "assert";
+import {
+  createBalanceSandbox,
+  createMint,
+  createMintAndVault,
+  createTokenAccount,
+  createTokenAccountInstrs,
+  sleep,
+} from "./utils";
+import { SendTxRequest } from "@project-serum/anchor/dist/cjs/provider";
+import { TypeDef } from "@project-serum/anchor/dist/cjs/program/namespace/types";
+
+const LOCKUP_PROGRAM_ID = new anchor.web3.PublicKey(
+  "DCrDvbtuqxFiAgTz7JrDy5c1PiuZkgfphyGUTpq2L2eW"
+);
+const REGISTRY_PROGRAM_ID = new anchor.web3.PublicKey(
+  "E9a8yDKJMRDGS7SNJpJGF9mJAK1K2knvqHcWriBK6JRZ"
+);
+const REALIZOR_PROGRAM_ID = new anchor.web3.PublicKey(
+  "6YHjQ62tRTRho5tkFdtMX9rQod2RkwZMz2VfSiGwK9v7"
+);
 
 describe("Lockup and Registry", () => {
-  // const commitment: Commitment = 'processed';
-  // const connection = new Connection('https://rpc-mainnet-fork.dappio.xyz', { commitment, wsEndpoint: 'wss://rpc-mainnet-fork.dappio.xyz/ws' });
-  // const options = anchor.Provider.defaultOptions();
-  // const wallet = NodeWallet.local();
-  // const provider = new anchor.Provider(connection, wallet, options);
+  const commitment: Commitment = "confirmed";
+  const connection = new Connection("https://rpc-mainnet-fork.epochs.studio", {
+    commitment,
+    wsEndpoint: "wss://rpc-mainnet-fork.epochs.studio/ws",
+  });
+  const options = anchor.AnchorProvider.defaultOptions();
+  const wallet = NodeWallet.local();
+  const provider = new anchor.AnchorProvider(connection, wallet, options);
 
-  const provider = anchor.Provider.env();
+  // const provider = anchor.Provider.env();
 
   anchor.setProvider(provider);
 
-  const lockup = anchor.workspace.Lockup as Program<Lockup>;
-  const registry = anchor.workspace.Registry as Program<Registry>;
-  const registryRealizor = anchor.workspace.RegistryRealizor as Program<RegistryRealizor>;
+  const lockup = new anchor.Program(lockupIDL, LOCKUP_PROGRAM_ID, provider);
+  const registry = new anchor.Program(
+    registryIDL,
+    REGISTRY_PROGRAM_ID,
+    provider
+  );
+  const realizor = new anchor.Program(
+    realizorIDL,
+    REALIZOR_PROGRAM_ID,
+    provider
+  );
 
   const WHITELIST_SIZE = 10;
 
   let lockupAddress = null as PublicKey;
-  let lockupNonce = null as number;
+  let _lockupBump = null as number;
+  const lockupNonce = new anchor.BN(Math.floor(Math.random() * 100000000));
 
   let mint = null;
   let god = null;
 
   it("Sets up initial test state", async () => {
     const [_mint, _god] = await createMintAndVault(
-      provider,
+      provider as anchor.AnchorProvider,
       new anchor.BN(1000000)
     );
     mint = _mint;
@@ -45,60 +79,82 @@ describe("Lockup and Registry", () => {
   });
 
   it("Is initialized!", async () => {
-    [
-      lockupAddress,
-      lockupNonce,
-    ] = await anchor.web3.PublicKey.findProgramAddress(
-      [Buffer.from(anchor.utils.bytes.utf8.encode("lockup"))],
-      lockup.programId
-    );
+    [lockupAddress, _lockupBump] =
+      await anchor.web3.PublicKey.findProgramAddress(
+        [
+          Buffer.from(anchor.utils.bytes.utf8.encode("lockup")),
+          lockupNonce.toBuffer("le", 8),
+        ],
+        lockup.programId
+      );
 
-    await lockup.rpc.whitelistNew(lockupNonce, {
-      accounts: {
+    await lockup.methods
+      .whitelistNew(lockupNonce)
+      .accounts({
         authority: provider.wallet.publicKey,
         lockup: lockupAddress,
-        systemProgram: SystemProgram.programId
-      },
-    });
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
 
     const lockupAccount = await lockup.account.lockup.fetch(lockupAddress);
+    const whitelist = lockupAccount.whitelist as Array<
+      TypeDef<
+        {
+          name: "WhitelistEntry";
+          type: {
+            kind: "struct";
+            fields: [
+              {
+                name: "programId";
+                type: "publicKey";
+              }
+            ];
+          };
+        },
+        Record<string, anchor.web3.PublicKey>
+      >
+    >;
 
     assert.ok(lockupAccount.authority.equals(provider.wallet.publicKey));
-    assert.ok(lockupAccount.whitelist.length === WHITELIST_SIZE);
-    lockupAccount.whitelist.forEach((e) => {
+    assert.ok(whitelist.length === WHITELIST_SIZE);
+    whitelist.forEach((e) => {
       assert.ok(e.programId.equals(anchor.web3.PublicKey.default));
     });
   });
 
   it("Deletes the default whitelisted addresses", async () => {
     const defaultEntry = { programId: anchor.web3.PublicKey.default };
-    await lockup.rpc.whitelistDelete(lockupNonce, defaultEntry, {
-      accounts: {
+    await lockup.methods
+      .whitelistDelete(lockupNonce, defaultEntry)
+      .accounts({
         authority: provider.wallet.publicKey,
         lockup: lockupAddress,
-      },
-    });
+      })
+      .rpc();
   });
 
   it("Sets a new authority", async () => {
     const newAuthority = Keypair.generate();
-    await lockup.rpc.setAuthority(lockupNonce, newAuthority.publicKey, {
-      accounts: {
+    await lockup.methods
+      .setAuthority(lockupNonce, newAuthority.publicKey)
+      .accounts({
         authority: provider.wallet.publicKey,
         lockup: lockupAddress,
-      },
-    });
+      })
+      .rpc();
 
     let lockupAccount = await lockup.account.lockup.fetch(lockupAddress);
     assert.ok(lockupAccount.authority.equals(newAuthority.publicKey));
 
-    await lockup.rpc.setAuthority(lockupNonce, provider.wallet.publicKey, {
-      accounts: {
+    await lockup.methods
+      .setAuthority(lockupNonce, provider.wallet.publicKey)
+      .accounts({
         authority: newAuthority.publicKey,
         lockup: lockupAddress,
-      },
-      signers: [newAuthority],
-    });
+      })
+      .signers([newAuthority])
+      .rpc();
 
     lockupAccount = await lockup.account.lockup.fetch(lockupAddress);
     assert.ok(lockupAccount.authority.equals(provider.wallet.publicKey));
@@ -123,41 +179,88 @@ describe("Lockup and Registry", () => {
       lockup: lockupAddress,
     };
 
-    await lockup.rpc.whitelistAdd(lockupNonce, entries[0], { accounts });
+    await lockup.methods
+      .whitelistAdd(lockupNonce, entries[0])
+      .accounts(accounts)
+      .rpc();
 
     let lockupAccount = await lockup.account.lockup.fetch(lockupAddress);
 
-    assert.ok(lockupAccount.whitelist.length === 1);
-    assert.deepEqual(lockupAccount.whitelist, [entries[0]]);
+    const whitelist = lockupAccount.whitelist as Array<
+      TypeDef<
+        {
+          name: "WhitelistEntry";
+          type: {
+            kind: "struct";
+            fields: [
+              {
+                name: "programId";
+                type: "publicKey";
+              }
+            ];
+          };
+        },
+        Record<string, anchor.web3.PublicKey>
+      >
+    >;
+
+    assert.ok(whitelist.length === 1);
+    assert.deepEqual(whitelist, [entries[0]]);
 
     for (let k = 1; k < WHITELIST_SIZE; k += 1) {
-      await lockup.rpc.whitelistAdd(lockupNonce, entries[k], { accounts });
+      await lockup.methods
+        .whitelistAdd(lockupNonce, entries[k])
+        .accounts(accounts)
+        .rpc();
     }
 
     lockupAccount = await lockup.account.lockup.fetch(lockupAddress);
 
-    assert.deepEqual(lockupAccount.whitelist, entries);
+    const whitelist2 = lockupAccount.whitelist as Array<
+      TypeDef<
+        {
+          name: "WhitelistEntry";
+          type: {
+            kind: "struct";
+            fields: [
+              {
+                name: "programId";
+                type: "publicKey";
+              }
+            ];
+          };
+        },
+        Record<string, anchor.web3.PublicKey>
+      >
+    >;
+
+    assert.deepEqual(whitelist2, entries);
 
     await assert.rejects(
       async () => {
         const e = await generateEntry();
-        await lockup.rpc.whitelistAdd(lockupNonce, e, { accounts });
+        await lockup.methods
+          .whitelistAdd(lockupNonce, e)
+          .accounts(accounts)
+          .rpc();
       },
-      (err) => {
-        assert.equal(err.code, 6008);
-        assert.equal(err.msg, "Whitelist is full");
+      (err: anchor.AnchorError) => {
+        assert.equal(err.error.errorCode.code, "WhitelistFull");
+        assert.equal(err.error.errorCode.number, 6008);
+        assert.equal(err.error.errorMessage, "Whitelist is full");
         return true;
       }
     );
   });
 
   it("Removes from the whitelist", async () => {
-    await lockup.rpc.whitelistDelete(lockupNonce, entries[0], {
-      accounts: {
+    await lockup.methods
+      .whitelistDelete(lockupNonce, entries[0])
+      .accounts({
         authority: provider.wallet.publicKey,
         lockup: lockupAddress,
-      },
-    });
+      })
+      .rpc();
     let lockupAccount = await lockup.account.lockup.fetch(lockupAddress);
     assert.deepEqual(lockupAccount.whitelist, entries.slice(1));
   });
@@ -167,52 +270,54 @@ describe("Lockup and Registry", () => {
   let vestingSigner = null as PublicKey;
 
   it("Creates a vesting account", async () => {
-    const startTs = new anchor.BN(Date.now() / 1000);
+    const slot = await connection.getSlot();
+    const blocktime = await connection.getBlockTime(slot);
+    const startTs = new anchor.BN(blocktime);
+    // const startTs = new anchor.BN(Date.now() / 1000);
+
     const endTs = new anchor.BN(startTs.toNumber() + 5);
     const periodCount = new anchor.BN(2);
     const beneficiary = provider.wallet.publicKey;
     const depositAmount = new anchor.BN(100);
 
     const vault = Keypair.generate();
-    let [
-      _vestingSigner,
-      vestingNonce,
-    ] = await anchor.web3.PublicKey.findProgramAddress(
-      [vesting.publicKey.toBuffer()],
-      lockup.programId
-    );
+    let [_vestingSigner, vestingNonce] =
+      await anchor.web3.PublicKey.findProgramAddress(
+        [vesting.publicKey.toBuffer()],
+        lockup.programId
+      );
     vestingSigner = _vestingSigner;
 
-    const sig1 = await lockup.rpc.createVesting(
-      beneficiary,
-      depositAmount,
-      vestingNonce,
-      startTs,
-      endTs,
-      periodCount,
-      null, // Lock realizor is None.
-      {
-        accounts: {
-          vesting: vesting.publicKey,
-          vault: vault.publicKey,
-          depositor: god,
-          depositorAuthority: provider.wallet.publicKey,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          rent: anchor.web3.SYSVAR_RENT_PUBKEY,
-          clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
-        },
-        signers: [vesting, vault],
-        instructions: [
-          await lockup.account.vesting.createInstruction(vesting),
-          ...(await createTokenAccountInstrs(
-            provider,
-            vault.publicKey,
-            mint,
-            vestingSigner
-          )),
-        ],
-      }
-    );
+    const sig = await lockup.methods
+      .createVesting(
+        beneficiary,
+        depositAmount,
+        vestingNonce,
+        startTs,
+        endTs,
+        periodCount,
+        null // Lock realizor is None.
+      )
+      .accounts({
+        vesting: vesting.publicKey,
+        vault: vault.publicKey,
+        depositor: god,
+        depositorAuthority: provider.wallet.publicKey,
+        tokenProgram: splToken.TOKEN_PROGRAM_ID,
+        rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+        clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+      })
+      .signers([vesting, vault])
+      .preInstructions([
+        await lockup.account.vesting.createInstruction(vesting),
+        ...(await createTokenAccountInstrs(
+          provider,
+          vault.publicKey,
+          mint,
+          vestingSigner
+        )),
+      ])
+      .rpc();
 
     vestingAccount = await lockup.account.vesting.fetch(vesting.publicKey);
 
@@ -227,26 +332,37 @@ describe("Lockup and Registry", () => {
     assert.ok(vestingAccount.startTs.eq(startTs));
     assert.ok(vestingAccount.endTs.eq(endTs));
     assert.ok(vestingAccount.realizor === null);
+
+    const vaultAccount = await splToken.getAccount(
+      provider.connection,
+      vestingAccount.vault
+    );
+    console.log(`vaultAccount amount: ${vaultAccount.amount}`);
   });
 
   it("Fails to withdraw from a vesting account before vesting", async () => {
     await assert.rejects(
       async () => {
-        await lockup.rpc.withdraw(new anchor.BN(100), {
-          accounts: {
+        await lockup.methods
+          .withdraw(new anchor.BN(100))
+          .accounts({
             vesting: vesting.publicKey,
             beneficiary: provider.wallet.publicKey,
             token: god,
             vault: vestingAccount.vault,
             vestingSigner: vestingSigner,
-            tokenProgram: TOKEN_PROGRAM_ID,
+            tokenProgram: splToken.TOKEN_PROGRAM_ID,
             clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
-          },
-        });
+          })
+          .rpc();
       },
-      (err) => {
-        assert.equal(err.code, 6007);
-        assert.equal(err.msg, "Insufficient withdrawal balance.");
+      (err: anchor.AnchorError) => {
+        assert.equal(err.error.errorCode.code, "InsufficientWithdrawalBalance");
+        assert.equal(err.error.errorCode.number, 6007);
+        assert.equal(
+          err.error.errorMessage,
+          "Insufficient withdrawal balance."
+        );
         return true;
       }
     );
@@ -254,6 +370,12 @@ describe("Lockup and Registry", () => {
 
   it("Waits for a vesting period to pass", async () => {
     await sleep(10 * 1000);
+
+    const vaultAccount = await splToken.getAccount(
+      provider.connection,
+      vestingAccount.vault
+    );
+    console.log(`vaultAccount amount: ${vaultAccount.amount}`);
   });
 
   it("Withdraws from the vesting account", async () => {
@@ -263,29 +385,34 @@ describe("Lockup and Registry", () => {
       provider.wallet.publicKey
     );
 
-    await lockup.rpc.withdraw(new anchor.BN(100), {
-      accounts: {
+    await lockup.methods
+      .withdraw(new anchor.BN(100))
+      .accounts({
         vesting: vesting.publicKey,
         beneficiary: provider.wallet.publicKey,
         token,
         vault: vestingAccount.vault,
         vestingSigner,
-        tokenProgram: TOKEN_PROGRAM_ID,
+        tokenProgram: splToken.TOKEN_PROGRAM_ID,
         clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
-      },
-    });
+      })
+      .rpc();
 
     vestingAccount = await lockup.account.vesting.fetch(vesting.publicKey);
     assert.ok(vestingAccount.outstanding.eq(new anchor.BN(0)));
 
-    const vaultAccount = await getTokenAccount(
-      provider,
+    const vaultAccount = await splToken.getAccount(
+      provider.connection,
       vestingAccount.vault
     );
-    assert.ok(vaultAccount.amount.eq(new anchor.BN(0)));
+    assert.ok(
+      new anchor.BN(vaultAccount.amount.toString()).eq(new anchor.BN(0))
+    );
 
-    const tokenAccount = await getTokenAccount(provider, token);
-    assert.ok(tokenAccount.amount.eq(new anchor.BN(100)));
+    const tokenAccount = await splToken.getAccount(provider.connection, token);
+    assert.ok(
+      new anchor.BN(tokenAccount.amount.toString()).eq(new anchor.BN(100))
+    );
   });
 
   const registrar = Keypair.generate();
@@ -298,24 +425,25 @@ describe("Lockup and Registry", () => {
   let registrarNonce = null;
   let poolMint = null;
   let registryAddress = null as PublicKey;
-  let registryNonce = null as number;
+  let _registryBump = null as number;
+
+  const registryNonce = new anchor.BN(Math.floor(Math.random() * 100000000));
 
   it("Creates registry genesis", async () => {
-    [
-      registryAddress,
-      registryNonce,
-    ] = await anchor.web3.PublicKey.findProgramAddress(
-      [Buffer.from(anchor.utils.bytes.utf8.encode("registry"))],
-      registry.programId
-    );
+    [registryAddress, _registryBump] =
+      await anchor.web3.PublicKey.findProgramAddress(
+        [
+          Buffer.from(anchor.utils.bytes.utf8.encode("registry")),
+          registryNonce.toBuffer("le", 8),
+        ],
+        registry.programId
+      );
 
-    const [
-      _registrarSigner,
-      _nonce,
-    ] = await anchor.web3.PublicKey.findProgramAddress(
-      [registrar.publicKey.toBuffer()],
-      registry.programId
-    );
+    const [_registrarSigner, _nonce] =
+      await anchor.web3.PublicKey.findProgramAddress(
+        [registrar.publicKey.toBuffer()],
+        registry.programId
+      );
     registrarSigner = _registrarSigner;
     registrarNonce = _nonce;
     poolMint = await createMint(provider, registrarSigner);
@@ -325,19 +453,24 @@ describe("Lockup and Registry", () => {
     let accounts = {
       authority: provider.wallet.publicKey,
       lockupProgram: lockup.programId,
-      realizorProgram: registryRealizor.programId,
+      realizorProgram: realizor.programId,
       registry: registryAddress,
       systemProgram: SystemProgram.programId,
     };
-    await registry.rpc.newRegistry(registryNonce, { accounts });
+    await registry.methods.newRegistry(registryNonce).accounts(accounts).rpc();
 
-    const registryAccount = await registry.account.registry.fetch(registryAddress);
+    const registryAccount = await registry.account.registry.fetch(
+      registryAddress
+    );
     assert.ok(registryAccount.lockupProgram.equals(lockup.programId));
 
     // Should not allow a second initializatoin.
     await assert.rejects(
       async () => {
-        await registry.rpc.newRegistry(registryNonce, { accounts });
+        await registry.methods
+          .newRegistry(registryNonce)
+          .accounts(accounts)
+          .rpc();
       },
       (err) => {
         return true;
@@ -346,29 +479,31 @@ describe("Lockup and Registry", () => {
   });
 
   it("Initializes the registrar", async () => {
-    await registry.rpc.initialize(
-      mint,
-      provider.wallet.publicKey,
-      registrarNonce,
-      withdrawalTimelock,
-      stakeRate,
-      rewardQLen,
-      {
-        accounts: {
-          registrar: registrar.publicKey,
-          poolMint,
-          rewardEventQ: rewardQ.publicKey,
-          rent: anchor.web3.SYSVAR_RENT_PUBKEY,
-        },
-        signers: [registrar, rewardQ],
-        instructions: [
-          await registry.account.registrar.createInstruction(registrar),
-          await registry.account.rewardQueue.createInstruction(rewardQ, 8250),
-        ],
-      }
-    );
+    await registry.methods
+      .initialize(
+        mint,
+        provider.wallet.publicKey,
+        registrarNonce,
+        withdrawalTimelock,
+        stakeRate,
+        rewardQLen
+      )
+      .accounts({
+        registrar: registrar.publicKey,
+        poolMint,
+        rewardEventQ: rewardQ.publicKey,
+        rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+      })
+      .signers([registrar, rewardQ])
+      .preInstructions([
+        await registry.account.registrar.createInstruction(registrar),
+        await registry.account.rewardQueue.createInstruction(rewardQ, 8250),
+      ])
+      .rpc();
 
-    registrarAccount = await registry.account.registrar.fetch(registrar.publicKey);
+    registrarAccount = await registry.account.registrar.fetch(
+      registrar.publicKey
+    );
 
     assert.ok(registrarAccount.authority.equals(provider.wallet.publicKey));
     assert.equal(registrarAccount.nonce, registrarNonce);
@@ -386,13 +521,11 @@ describe("Lockup and Registry", () => {
   let balancesLocked = null;
 
   it("Creates a member", async () => {
-    const [
-      _memberSigner,
-      memberNonce,
-    ] = await anchor.web3.PublicKey.findProgramAddress(
-      [registrar.publicKey.toBuffer(), member.publicKey.toBuffer()],
-      registry.programId
-    );
+    const [_memberSigner, memberNonce] =
+      await anchor.web3.PublicKey.findProgramAddress(
+        [registrar.publicKey.toBuffer(), member.publicKey.toBuffer()],
+        registry.programId
+      );
     memberSigner = _memberSigner;
 
     const [mainTx, _balances] = await createBalanceSandbox(
@@ -409,37 +542,42 @@ describe("Lockup and Registry", () => {
     balances = _balances;
     balancesLocked = _balancesLocked;
 
-    const txCreate = registry.transaction.createMember(memberNonce, {
-      accounts: {
+    const txCreate = await registry.methods
+      .createMember(memberNonce)
+      .accounts({
         registrar: registrar.publicKey,
         member: member.publicKey,
         beneficiary: provider.wallet.publicKey,
         memberSigner,
-        tokenProgram: TOKEN_PROGRAM_ID,
+        tokenProgram: splToken.TOKEN_PROGRAM_ID,
         rent: anchor.web3.SYSVAR_RENT_PUBKEY,
-      },
-      instructions: [await registry.account.member.createInstruction(member)],
-    });
+      })
+      .preInstructions([
+        await registry.account.member.createInstruction(member),
+      ])
+      .transaction();
 
-    const txUpdateBalances = registry.transaction.updateMemberBalances(memberNonce, {
-      accounts: {
+    const txUpdateBalances = await registry.methods
+      .updateMemberBalances(memberNonce)
+      .accounts({
         registrar: registrar.publicKey,
         member: member.publicKey,
         memberSigner,
         balances,
-      },
-    });
+      })
+      .transaction();
 
-    const txUpdateBalancesLock = registry.transaction.updateMemberBalancesLock(memberNonce, {
-      accounts: {
+    const txUpdateBalancesLock = await registry.methods
+      .updateMemberBalancesLock(memberNonce)
+      .accounts({
         registrar: registrar.publicKey,
         member: member.publicKey,
         memberSigner,
         balancesLocked,
-      },
-    });
+      })
+      .transaction();
 
-    const wallet = provider.wallet as NodeWallet
+    const wallet = provider.wallet as NodeWallet;
 
     const signers = [member, wallet.payer];
 
@@ -472,28 +610,30 @@ describe("Lockup and Registry", () => {
 
   it("Deposits (unlocked) to a member", async () => {
     const depositAmount = new anchor.BN(120);
-    await registry.rpc.deposit(depositAmount, {
-      accounts: {
+    await registry.methods
+      .deposit(depositAmount)
+      .accounts({
         depositor: god,
         depositorAuthority: provider.wallet.publicKey,
-        tokenProgram: TOKEN_PROGRAM_ID,
+        tokenProgram: splToken.TOKEN_PROGRAM_ID,
         vault: memberAccount.balances.vault,
         beneficiary: provider.wallet.publicKey,
         member: member.publicKey,
-      },
-    });
+      })
+      .rpc();
 
-    const memberVault = await getTokenAccount(
-      provider,
+    const memberVault = await splToken.getAccount(
+      provider.connection,
       memberAccount.balances.vault
     );
-    assert.ok(memberVault.amount.eq(depositAmount));
+    assert.ok(new anchor.BN(memberVault.amount.toString()).eq(depositAmount));
   });
 
   it("Stakes to a member (unlocked)", async () => {
     const stakeAmount = new anchor.BN(10);
-    await registry.rpc.stake(stakeAmount, {
-      accounts: {
+    await registry.methods
+      .stake(stakeAmount)
+      .accounts({
         // Stake instance.
         registrar: registrar.publicKey,
         rewardEventQ: rewardQ.publicKey,
@@ -508,26 +648,28 @@ describe("Lockup and Registry", () => {
         registrarSigner,
         // Misc.
         clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
-        tokenProgram: TOKEN_PROGRAM_ID,
-      },
-    });
+        tokenProgram: splToken.TOKEN_PROGRAM_ID,
+      })
+      .rpc();
 
-    const vault = await getTokenAccount(
-      provider,
+    const vault = await splToken.getAccount(
+      provider.connection,
       memberAccount.balances.vault
     );
-    const vaultStake = await getTokenAccount(
-      provider,
+    const vaultStake = await splToken.getAccount(
+      provider.connection,
       memberAccount.balances.vaultStake
     );
-    const spt = await getTokenAccount(
-      provider,
+    const spt = await splToken.getAccount(
+      provider.connection,
       memberAccount.balances.spt
     );
 
-    assert.ok(vault.amount.eq(new anchor.BN(100)));
-    assert.ok(vaultStake.amount.eq(new anchor.BN(20)));
-    assert.ok(spt.amount.eq(new anchor.BN(10)));
+    assert.ok(new anchor.BN(vault.amount.toString()).eq(new anchor.BN(100)));
+    assert.ok(
+      new anchor.BN(vaultStake.amount.toString()).eq(new anchor.BN(20))
+    );
+    assert.ok(new anchor.BN(spt.amount.toString()).eq(new anchor.BN(10)));
   });
 
   const unlockedVendor = Keypair.generate();
@@ -540,49 +682,44 @@ describe("Lockup and Registry", () => {
     };
     const rewardAmount = new anchor.BN(200);
     const expiry = new anchor.BN(Date.now() / 1000 + 5);
-    const [
-      _vendorSigner,
-      nonce,
-    ] = await anchor.web3.PublicKey.findProgramAddress(
-      [registrar.publicKey.toBuffer(), unlockedVendor.publicKey.toBuffer()],
-      registry.programId
-    );
+    const [_vendorSigner, nonce] =
+      await anchor.web3.PublicKey.findProgramAddress(
+        [registrar.publicKey.toBuffer(), unlockedVendor.publicKey.toBuffer()],
+        registry.programId
+      );
     unlockedVendorSigner = _vendorSigner;
 
-    await registry.rpc.dropReward(
-      rewardKind,
-      rewardAmount,
-      expiry,
-      provider.wallet.publicKey,
-      nonce,
-      {
-        accounts: {
-          registrar: registrar.publicKey,
-          rewardEventQ: rewardQ.publicKey,
-          poolMint,
-
-          vendor: unlockedVendor.publicKey,
-          vendorVault: unlockedVendorVault.publicKey,
-
-          depositor: god,
-          depositorAuthority: provider.wallet.publicKey,
-
-          tokenProgram: TOKEN_PROGRAM_ID,
-          clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
-          rent: anchor.web3.SYSVAR_RENT_PUBKEY,
-        },
-        signers: [unlockedVendorVault, unlockedVendor],
-        instructions: [
-          ...(await createTokenAccountInstrs(
-            provider,
-            unlockedVendorVault.publicKey,
-            mint,
-            unlockedVendorSigner
-          )),
-          await registry.account.rewardVendor.createInstruction(unlockedVendor),
-        ],
-      }
-    );
+    await registry.methods
+      .dropReward(
+        rewardKind,
+        rewardAmount,
+        expiry,
+        provider.wallet.publicKey,
+        nonce
+      )
+      .accounts({
+        registrar: registrar.publicKey,
+        rewardEventQ: rewardQ.publicKey,
+        poolMint,
+        vendor: unlockedVendor.publicKey,
+        vendorVault: unlockedVendorVault.publicKey,
+        depositor: god,
+        depositorAuthority: provider.wallet.publicKey,
+        tokenProgram: splToken.TOKEN_PROGRAM_ID,
+        clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+        rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+      })
+      .signers([unlockedVendorVault, unlockedVendor])
+      .preInstructions([
+        ...(await createTokenAccountInstrs(
+          provider,
+          unlockedVendorVault.publicKey,
+          mint,
+          unlockedVendorSigner
+        )),
+        await registry.account.rewardVendor.createInstruction(unlockedVendor),
+      ])
+      .rpc();
 
     const vendorAccount = await registry.account.rewardVendor.fetch(
       unlockedVendor.publicKey
@@ -615,12 +752,12 @@ describe("Lockup and Registry", () => {
       mint,
       provider.wallet.publicKey
     );
-    await registry.rpc.claimReward({
-      accounts: {
+    await registry.methods
+      .claimReward()
+      .accounts({
         to: token,
         cmn: {
           registrar: registrar.publicKey,
-
           member: member.publicKey,
           beneficiary: provider.wallet.publicKey,
           balancesSpt: balances.spt,
@@ -628,15 +765,16 @@ describe("Lockup and Registry", () => {
           vendor: unlockedVendor.publicKey,
           vault: unlockedVendorVault.publicKey,
           vendorSigner: unlockedVendorSigner,
-
-          tokenProgram: TOKEN_PROGRAM_ID,
+          tokenProgram: splToken.TOKEN_PROGRAM_ID,
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
         },
-      },
-    });
+      })
+      .rpc();
 
-    let tokenAccount = await getTokenAccount(provider, token);
-    assert.ok(tokenAccount.amount.eq(new anchor.BN(200)));
+    let tokenAccount = await splToken.getAccount(provider.connection, token);
+    assert.ok(
+      new anchor.BN(tokenAccount.amount.toString()).eq(new anchor.BN(200))
+    );
 
     const memberAccount = await registry.account.member.fetch(member.publicKey);
     assert.ok(memberAccount.rewardsCursor == 1);
@@ -649,58 +787,57 @@ describe("Lockup and Registry", () => {
   let lockedRewardKind = null;
 
   it("Drops a locked reward", async () => {
+    const slot = await connection.getSlot();
+    const blocktime = await connection.getBlockTime(slot);
+    const startTs = new anchor.BN(blocktime);
+    const endTs = new anchor.BN(startTs.toNumber() + 6);
     lockedRewardKind = {
       locked: {
-        startTs: new anchor.BN(Date.now() / 1000),
-        endTs: new anchor.BN(Date.now() / 1000 + 6),
+        startTs,
+        endTs,
         periodCount: new anchor.BN(2),
       },
     };
     lockedRewardAmount = new anchor.BN(200);
     const expiry = new anchor.BN(Date.now() / 1000 + 5);
-    const [
-      _vendorSigner,
-      nonce,
-    ] = await anchor.web3.PublicKey.findProgramAddress(
-      [registrar.publicKey.toBuffer(), lockedVendor.publicKey.toBuffer()],
-      registry.programId
-    );
+    const [_vendorSigner, nonce] =
+      await anchor.web3.PublicKey.findProgramAddress(
+        [registrar.publicKey.toBuffer(), lockedVendor.publicKey.toBuffer()],
+        registry.programId
+      );
     lockedVendorSigner = _vendorSigner;
 
-    await registry.rpc.dropReward(
-      lockedRewardKind,
-      lockedRewardAmount,
-      expiry,
-      provider.wallet.publicKey,
-      nonce,
-      {
-        accounts: {
-          registrar: registrar.publicKey,
-          rewardEventQ: rewardQ.publicKey,
-          poolMint,
-
-          vendor: lockedVendor.publicKey,
-          vendorVault: lockedVendorVault.publicKey,
-
-          depositor: god,
-          depositorAuthority: provider.wallet.publicKey,
-
-          tokenProgram: TOKEN_PROGRAM_ID,
-          clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
-          rent: anchor.web3.SYSVAR_RENT_PUBKEY,
-        },
-        signers: [lockedVendorVault, lockedVendor],
-        instructions: [
-          ...(await createTokenAccountInstrs(
-            provider,
-            lockedVendorVault.publicKey,
-            mint,
-            lockedVendorSigner
-          )),
-          await registry.account.rewardVendor.createInstruction(lockedVendor),
-        ],
-      }
-    );
+    await registry.methods
+      .dropReward(
+        lockedRewardKind,
+        lockedRewardAmount,
+        expiry,
+        provider.wallet.publicKey,
+        nonce
+      )
+      .accounts({
+        registrar: registrar.publicKey,
+        rewardEventQ: rewardQ.publicKey,
+        poolMint,
+        vendor: lockedVendor.publicKey,
+        vendorVault: lockedVendorVault.publicKey,
+        depositor: god,
+        depositorAuthority: provider.wallet.publicKey,
+        tokenProgram: splToken.TOKEN_PROGRAM_ID,
+        clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+        rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+      })
+      .signers([lockedVendorVault, lockedVendor])
+      .preInstructions([
+        ...(await createTokenAccountInstrs(
+          provider,
+          lockedVendorVault.publicKey,
+          mint,
+          lockedVendorSigner
+        )),
+        await registry.account.rewardVendor.createInstruction(lockedVendor),
+      ])
+      .rpc();
 
     const vendorAccount = await registry.account.rewardVendor.fetch(
       lockedVendor.publicKey
@@ -737,35 +874,67 @@ describe("Lockup and Registry", () => {
   it("Claims a locked reward", async () => {
     vendoredVesting = Keypair.generate();
     vendoredVestingVault = Keypair.generate();
-    let [
-      _vendoredVestingSigner,
-      nonce,
-    ] = await anchor.web3.PublicKey.findProgramAddress(
-      [vendoredVesting.publicKey.toBuffer()],
-      lockup.programId
-    );
-    vendoredVestingSigner = _vendoredVestingSigner;
-    const remainingAccounts = lockup.instruction.createVesting
-      .accounts({
-        vesting: vendoredVesting.publicKey,
-        vault: vendoredVestingVault.publicKey,
-        depositor: lockedVendorVault.publicKey,
-        depositorAuthority: lockedVendorSigner,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        rent: anchor.web3.SYSVAR_RENT_PUBKEY,
-        clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
-      })
-      // Change the signer status on the vendor signer since it's signed by the program, not the
-      // client.
-      .map((meta) =>
-        meta.pubkey === lockedVendorSigner ? { ...meta, isSigner: false } : meta
+    let [_vendoredVestingSigner, nonce] =
+      await anchor.web3.PublicKey.findProgramAddress(
+        [vendoredVesting.publicKey.toBuffer()],
+        lockup.programId
       );
+    vendoredVestingSigner = _vendoredVestingSigner;
 
-    const sig = await registry.rpc.claimRewardLocked(registryNonce, nonce, {
-      accounts: {
+    // Make remaining accounts for createVesting ix
+
+    const remainingAccounts = [
+      // vesting
+      {
+        pubkey: vendoredVesting.publicKey,
+        isWritable: true,
+        isSigner: false,
+      },
+      // vault
+      {
+        pubkey: vendoredVestingVault.publicKey,
+        isWritable: true,
+        isSigner: false,
+      },
+      // depositor
+      {
+        pubkey: lockedVendorVault.publicKey,
+        isWritable: true,
+        isSigner: false,
+      },
+      // depositorAuthority
+      // Note: Change the signer status on the vendor signer since it's signed by the program, not the client.
+      {
+        pubkey: lockedVendorSigner,
+        isWritable: false,
+        isSigner: false,
+      },
+      // tokenProgram
+      {
+        pubkey: splToken.TOKEN_PROGRAM_ID,
+        isWritable: false,
+        isSigner: false,
+      },
+      // rent
+      {
+        pubkey: anchor.web3.SYSVAR_RENT_PUBKEY,
+        isWritable: false,
+        isSigner: false,
+      },
+      // clock
+      {
+        pubkey: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+        isWritable: false,
+        isSigner: false,
+      },
+    ];
+
+    const sig = await registry.methods
+      .claimRewardLocked(registryNonce, nonce)
+      .accounts({
         registry: registryAddress,
         lockupProgram: lockup.programId,
-        realizorProgram: registryRealizor.programId,
+        realizorProgram: realizor.programId,
         cmn: {
           registrar: registrar.publicKey,
 
@@ -778,13 +947,13 @@ describe("Lockup and Registry", () => {
           vault: lockedVendorVault.publicKey,
           vendorSigner: lockedVendorSigner,
 
-          tokenProgram: TOKEN_PROGRAM_ID,
+          tokenProgram: splToken.TOKEN_PROGRAM_ID,
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
         },
-      },
-      remainingAccounts,
-      signers: [vendoredVesting, vendoredVestingVault],
-      instructions: [
+      })
+      .remainingAccounts(remainingAccounts)
+      .signers([vendoredVesting, vendoredVestingVault])
+      .preInstructions([
         await lockup.account.vesting.createInstruction(vendoredVesting),
         ...(await createTokenAccountInstrs(
           provider,
@@ -792,8 +961,8 @@ describe("Lockup and Registry", () => {
           mint,
           vendoredVestingSigner
         )),
-      ],
-    });
+      ])
+      .rpc();
 
     const lockupAccount = await lockup.account.vesting.fetch(
       vendoredVesting.publicKey
@@ -809,7 +978,7 @@ describe("Lockup and Registry", () => {
       lockupAccount.periodCount.eq(lockedRewardKind.locked.periodCount)
     );
     assert.ok(lockupAccount.whitelistOwned.eq(new anchor.BN(0)));
-    assert.ok(lockupAccount.realizor.program.equals(registryRealizor.programId));
+    assert.ok(lockupAccount.realizor.program.equals(realizor.programId));
     assert.ok(lockupAccount.realizor.metadata.equals(member.publicKey));
   });
 
@@ -819,9 +988,7 @@ describe("Lockup and Registry", () => {
 
   it("Should fail to unlock an unrealized lockup reward", async () => {
     // Get Member account
-    const memberAccount = await registry.account.member.fetch(
-      member.publicKey
-    );
+    const memberAccount = await registry.account.member.fetch(member.publicKey);
 
     const token = await createTokenAccount(
       provider,
@@ -831,40 +998,66 @@ describe("Lockup and Registry", () => {
     await assert.rejects(
       async () => {
         const withdrawAmount = new anchor.BN(10);
-        await lockup.rpc.withdraw(withdrawAmount, {
-          accounts: {
+        await lockup.methods
+          .withdraw(withdrawAmount)
+          .accounts({
             vesting: vendoredVesting.publicKey,
             beneficiary: provider.wallet.publicKey,
             token,
             vault: vendoredVestingVault.publicKey,
             vestingSigner: vendoredVestingSigner,
-            tokenProgram: TOKEN_PROGRAM_ID,
+            tokenProgram: splToken.TOKEN_PROGRAM_ID,
             clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
-          },
+          })
           // TODO: trait methods generated on the client. Until then, we need to manually
           //       specify the account metas here.
-          remainingAccounts: [
-            { pubkey: registryRealizor.programId, isWritable: false, isSigner: false },
+          .remainingAccounts([
+            {
+              pubkey: realizor.programId,
+              isWritable: false,
+              isSigner: false,
+            },
             { pubkey: registry.programId, isWritable: false, isSigner: false },
             // is_realized
             { pubkey: member.publicKey, isWritable: false, isSigner: false },
             { pubkey: balances.spt, isWritable: false, isSigner: false },
             { pubkey: balancesLocked.spt, isWritable: false, isSigner: false },
             // MemberData
-            { pubkey: memberAccount.registrar, isWritable: false, isSigner: false },
-            { pubkey: memberAccount.beneficiary, isWritable: false, isSigner: false },
-            { pubkey: memberAccount.metadata, isWritable: false, isSigner: false },
-            { pubkey: memberAccount.balances.spt, isWritable: false, isSigner: false },
-            { pubkey: memberAccount.balancesLocked.spt, isWritable: false, isSigner: false },
-          ],
-        });
+            {
+              pubkey: memberAccount.registrar,
+              isWritable: false,
+              isSigner: false,
+            },
+            {
+              pubkey: memberAccount.beneficiary,
+              isWritable: false,
+              isSigner: false,
+            },
+            {
+              pubkey: memberAccount.metadata,
+              isWritable: false,
+              isSigner: false,
+            },
+            {
+              pubkey: memberAccount.balances.spt,
+              isWritable: false,
+              isSigner: false,
+            },
+            {
+              pubkey: memberAccount.balancesLocked.spt,
+              isWritable: false,
+              isSigner: false,
+            },
+          ])
+          .rpc();
       },
-      (err) => {
+      (err: anchor.AnchorError) => {
         // Solana doesn't propagate errors across CPI. So we receive the registry's error code,
         // not the lockup's.
         // const errorCode = "custom program error: 0x65";
         // assert.ok(err.toString().split(errorCode).length === 2);
-        assert.equal(err.code, 6000);
+        assert.equal(err.error.errorCode.code, "UnrealizedReward");
+        assert.equal(err.error.errorCode.number, 6000);
         return true;
       }
     );
@@ -875,77 +1068,72 @@ describe("Lockup and Registry", () => {
   it("Unstakes (unlocked)", async () => {
     const unstakeAmount = new anchor.BN(10);
 
-    await registry.rpc.startUnstake(unstakeAmount, false, {
-      accounts: {
+    await registry.methods
+      .startUnstake(unstakeAmount, false)
+      .accounts({
         registrar: registrar.publicKey,
         rewardEventQ: rewardQ.publicKey,
         poolMint,
-
         pendingWithdrawal: pendingWithdrawal.publicKey,
         member: member.publicKey,
         beneficiary: provider.wallet.publicKey,
         balances,
-
         memberSigner,
-
-        tokenProgram: TOKEN_PROGRAM_ID,
+        tokenProgram: splToken.TOKEN_PROGRAM_ID,
         clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
         rent: anchor.web3.SYSVAR_RENT_PUBKEY,
-      },
-      signers: [pendingWithdrawal],
-      instructions: [
+      })
+      .signers([pendingWithdrawal])
+      .preInstructions([
         await registry.account.pendingWithdrawal.createInstruction(
           pendingWithdrawal
         ),
-      ],
-    });
+      ])
+      .rpc();
 
-    const vaultPw = await getTokenAccount(
-      provider,
+    const vaultPw = await splToken.getAccount(
+      provider.connection,
       memberAccount.balances.vaultPw
     );
-    const vaultStake = await getTokenAccount(
-      provider,
+    const vaultStake = await splToken.getAccount(
+      provider.connection,
       memberAccount.balances.vaultStake
     );
-    const spt = await getTokenAccount(
-      provider,
+    const spt = await splToken.getAccount(
+      provider.connection,
       memberAccount.balances.spt
     );
 
-    assert.ok(vaultPw.amount.eq(new anchor.BN(20)));
-    assert.ok(vaultStake.amount.eq(new anchor.BN(0)));
-    assert.ok(spt.amount.eq(new anchor.BN(0)));
+    assert.ok(new anchor.BN(vaultPw.amount.toString()).eq(new anchor.BN(20)));
+    assert.ok(new anchor.BN(vaultStake.amount.toString()).eq(new anchor.BN(0)));
+    assert.ok(new anchor.BN(spt.amount.toString()).eq(new anchor.BN(0)));
   });
-
-  const tryEndUnstake = async () => {
-    await registry.rpc.endUnstake({
-      accounts: {
-        registrar: registrar.publicKey,
-
-        member: member.publicKey,
-        beneficiary: provider.wallet.publicKey,
-        pendingWithdrawal: pendingWithdrawal.publicKey,
-
-        vault: balances.vault,
-        vaultPw: balances.vaultPw,
-
-        memberSigner,
-
-        clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
-        tokenProgram: TOKEN_PROGRAM_ID,
-      },
-    });
-  };
 
   it("Fails to end unstaking before timelock", async () => {
     await assert.rejects(
       async () => {
-        await tryEndUnstake();
+        await registry.methods
+          .endUnstake()
+          .accounts({
+            registrar: registrar.publicKey,
+            member: member.publicKey,
+            beneficiary: provider.wallet.publicKey,
+            pendingWithdrawal: pendingWithdrawal.publicKey,
+            vault: balances.vault,
+            vaultPw: balances.vaultPw,
+            memberSigner,
+            clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+            tokenProgram: splToken.TOKEN_PROGRAM_ID,
+          })
+          .rpc();
       },
-      (err) => {
-        assert.equal(err.code, 6009);
-        assert.equal(err.msg, "The unstake timelock has not yet expired.");
+      (err: anchor.AnchorError) => {
+        assert.equal(err.error.errorCode.code, "UnstakeTimelock");
+        assert.equal(err.error.errorCode.number, 6009);
+        assert.equal(
+          err.error.errorMessage,
+          "The unstake timelock has not yet expired."
+        );
         return true;
       }
     );
@@ -956,19 +1144,32 @@ describe("Lockup and Registry", () => {
   });
 
   it("Unstake finalizes (unlocked)", async () => {
-    await tryEndUnstake();
+    await registry.methods
+      .endUnstake()
+      .accounts({
+        registrar: registrar.publicKey,
+        member: member.publicKey,
+        beneficiary: provider.wallet.publicKey,
+        pendingWithdrawal: pendingWithdrawal.publicKey,
+        vault: balances.vault,
+        vaultPw: balances.vaultPw,
+        memberSigner,
+        clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+        tokenProgram: splToken.TOKEN_PROGRAM_ID,
+      })
+      .rpc();
 
-    const vault = await getTokenAccount(
-      provider,
+    const vault = await splToken.getAccount(
+      provider.connection,
       memberAccount.balances.vault
     );
-    const vaultPw = await getTokenAccount(
-      provider,
+    const vaultPw = await splToken.getAccount(
+      provider.connection,
       memberAccount.balances.vaultPw
     );
 
-    assert.ok(vault.amount.eq(new anchor.BN(120)));
-    assert.ok(vaultPw.amount.eq(new anchor.BN(0)));
+    assert.ok(new anchor.BN(vault.amount.toString()).eq(new anchor.BN(120)));
+    assert.ok(new anchor.BN(vaultPw.amount.toString()).eq(new anchor.BN(0)));
   });
 
   it("Withdraws deposits (unlocked)", async () => {
@@ -978,27 +1179,26 @@ describe("Lockup and Registry", () => {
       provider.wallet.publicKey
     );
     const withdrawAmount = new anchor.BN(100);
-    await registry.rpc.withdraw(withdrawAmount, {
-      accounts: {
+    await registry.methods
+      .withdraw(withdrawAmount)
+      .accounts({
         registrar: registrar.publicKey,
         member: member.publicKey,
         beneficiary: provider.wallet.publicKey,
         vault: memberAccount.balances.vault,
         memberSigner,
         depositor: token,
-        tokenProgram: TOKEN_PROGRAM_ID,
-      },
-    });
+        tokenProgram: splToken.TOKEN_PROGRAM_ID,
+      })
+      .rpc();
 
-    const tokenAccount = await getTokenAccount(provider, token);
-    assert.ok(tokenAccount.amount.eq(withdrawAmount));
+    const tokenAccount = await splToken.getAccount(provider.connection, token);
+    assert.ok(new anchor.BN(tokenAccount.amount.toString()).eq(withdrawAmount));
   });
 
   it("Should succesfully unlock a locked reward after unstaking", async () => {
     // Get Member account
-    const memberAccount = await registry.account.member.fetch(
-      member.publicKey
-    );
+    const memberAccount = await registry.account.member.fetch(member.publicKey);
 
     const token = await createTokenAccount(
       provider,
@@ -1007,20 +1207,25 @@ describe("Lockup and Registry", () => {
     );
 
     const withdrawAmount = new anchor.BN(7);
-    await lockup.rpc.withdraw(withdrawAmount, {
-      accounts: {
+    await lockup.methods
+      .withdraw(withdrawAmount)
+      .accounts({
         vesting: vendoredVesting.publicKey,
         beneficiary: provider.wallet.publicKey,
         token,
         vault: vendoredVestingVault.publicKey,
         vestingSigner: vendoredVestingSigner,
-        tokenProgram: TOKEN_PROGRAM_ID,
+        tokenProgram: splToken.TOKEN_PROGRAM_ID,
         clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
-      },
+      })
       // TODO: trait methods generated on the client. Until then, we need to manually
       //       specify the account metas here.
-      remainingAccounts: [
-        { pubkey: registryRealizor.programId, isWritable: false, isSigner: false },
+      .remainingAccounts([
+        {
+          pubkey: realizor.programId,
+          isWritable: false,
+          isSigner: false,
+        },
         { pubkey: registry.programId, isWritable: false, isSigner: false },
         // is_realized
         { pubkey: member.publicKey, isWritable: false, isSigner: false },
@@ -1028,13 +1233,26 @@ describe("Lockup and Registry", () => {
         { pubkey: balancesLocked.spt, isWritable: false, isSigner: false },
         // MemberData
         { pubkey: memberAccount.registrar, isWritable: false, isSigner: false },
-        { pubkey: memberAccount.beneficiary, isWritable: false, isSigner: false },
+        {
+          pubkey: memberAccount.beneficiary,
+          isWritable: false,
+          isSigner: false,
+        },
         { pubkey: memberAccount.metadata, isWritable: false, isSigner: false },
-        { pubkey: memberAccount.balances.spt, isWritable: false, isSigner: false },
-        { pubkey: memberAccount.balancesLocked.spt, isWritable: false, isSigner: false },
-      ],
-    });
-    const tokenAccount = await getTokenAccount(provider, token);
-    assert.ok(tokenAccount.amount.eq(withdrawAmount));
+        {
+          pubkey: memberAccount.balances.spt,
+          isWritable: false,
+          isSigner: false,
+        },
+        {
+          pubkey: memberAccount.balancesLocked.spt,
+          isWritable: false,
+          isSigner: false,
+        },
+      ])
+      .rpc();
+
+    const tokenAccount = await splToken.getAccount(provider.connection, token);
+    assert.ok(new anchor.BN(tokenAccount.amount.toString()).eq(withdrawAmount));
   });
 });

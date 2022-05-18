@@ -1,6 +1,6 @@
 use anchor_lang::{
     prelude::*,
-    solana_program::{instruction::Instruction, log::sol_log, program::invoke_signed},
+    solana_program::{instruction::Instruction, program::invoke_signed},
 };
 use anchor_spl::token::{self, TokenAccount, Transfer};
 use registry_realizor::IsRealized;
@@ -16,7 +16,7 @@ pub mod lockup {
 
     pub const WHITELIST_SIZE: usize = 10;
 
-    pub fn whitelist_new(ctx: Context<WhitelistNew>, _bump: u8) -> Result<()> {
+    pub fn whitelist_new(ctx: Context<WhitelistNew>, _lockup_nonce: u64) -> Result<()> {
         let mut whitelist = vec![];
         whitelist.resize(WHITELIST_SIZE, Default::default());
         ctx.accounts.lockup.authority = *ctx.accounts.authority.key;
@@ -26,7 +26,7 @@ pub mod lockup {
     }
 
     #[access_control(whitelist_auth(&ctx))]
-    pub fn whitelist_add(ctx: Context<Auth>, _bump: u8, entry: WhitelistEntry) -> Result<()> {
+    pub fn whitelist_add(ctx: Context<Auth>, _lockup_nonce: u64, entry: WhitelistEntry) -> Result<()> {
         if ctx.accounts.lockup.whitelist.len() == WHITELIST_SIZE {
             return Err(ErrorCode::WhitelistFull.into());
         }
@@ -39,7 +39,7 @@ pub mod lockup {
     }
 
     #[access_control(whitelist_auth(&ctx))]
-    pub fn whitelist_delete(ctx: Context<Auth>, _bump: u8, entry: WhitelistEntry) -> Result<()> {
+    pub fn whitelist_delete(ctx: Context<Auth>, _lockup_nonce: u64, entry: WhitelistEntry) -> Result<()> {
         if !ctx.accounts.lockup.whitelist.contains(&entry) {
             return Err(ErrorCode::WhitelistEntryNotFound.into());
         }
@@ -49,7 +49,7 @@ pub mod lockup {
     }
 
     #[access_control(whitelist_auth(&ctx))]
-    pub fn set_authority(ctx: Context<Auth>, _bump: u8, new_authority: Pubkey) -> Result<()> {
+    pub fn set_authority(ctx: Context<Auth>, _lockup_nonce: u64, new_authority: Pubkey) -> Result<()> {
         ctx.accounts.lockup.authority = new_authority;
 
         Ok(())
@@ -94,12 +94,13 @@ pub mod lockup {
 
     #[access_control(is_realized(&ctx))]
     pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
+        let available_for_withdrawal = calculator::available_for_withdrawal(
+            &ctx.accounts.vesting,
+            ctx.accounts.clock.unix_timestamp,
+        );
+
         // Has the given amount vested?
-        if amount
-            > calculator::available_for_withdrawal(
-                &ctx.accounts.vesting,
-                ctx.accounts.clock.unix_timestamp,
-            )
+        if amount > available_for_withdrawal
         {
             return Err(ErrorCode::InsufficientWithdrawalBalance.into());
         }
@@ -196,14 +197,13 @@ pub struct Lockup {
 }
 
 #[derive(Accounts)]
-#[instruction(lockup_bump: u8)]
+#[instruction(lockup_nonce: u64)]
 pub struct WhitelistNew<'info> {
-    /// CHECK: This is not dangerous because we don't read or write from this account
-    #[account(mut, signer)]
-    pub authority: AccountInfo<'info>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
     #[account(
         init,
-        seeds = [b"lockup".as_ref()],
+        seeds = [b"lockup".as_ref(), &lockup_nonce.to_le_bytes()],
         bump,
         payer = authority,
         space = 1000
@@ -214,15 +214,13 @@ pub struct WhitelistNew<'info> {
 }
 
 #[derive(Accounts)]
-#[instruction(lockup_bump: u8)]
+#[instruction(lockup_nonce: u64)]
 pub struct Auth<'info> {
-    /// CHECK: This is not dangerous because we don't read or write from this account
-    #[account(signer)]
-    pub authority: AccountInfo<'info>,
+    pub authority: Signer<'info>,
     #[account(
         mut,
-        seeds = [b"lockup".as_ref()],
-        bump = lockup_bump
+        seeds = [b"lockup".as_ref(), &lockup_nonce.to_le_bytes()],
+        bump
     )]
     pub lockup: Box<Account<'info, Lockup>>,
 }
@@ -238,9 +236,7 @@ pub struct CreateVesting<'info> {
     /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     pub depositor: AccountInfo<'info>,
-    /// CHECK: This is not dangerous because we don't read or write from this account
-    #[account(signer)]
-    pub depositor_authority: AccountInfo<'info>,
+    pub depositor_authority: Signer<'info>,
     // Misc.
     /// CHECK: This is not dangerous because we don't read or write from this account
     #[account("token_program.key == &token::ID")]
@@ -274,9 +270,7 @@ pub struct Withdraw<'info> {
     // Vesting.
     #[account(mut, has_one = beneficiary, has_one = vault)]
     vesting: Box<Account<'info, Vesting>>,
-    /// CHECK: This is not dangerous because we don't read or write from this account
-    #[account(signer)]
-    beneficiary: AccountInfo<'info>,
+    beneficiary: Signer<'info>,
     #[account(mut)]
     vault: Account<'info, TokenAccount>,
     /// CHECK: This is not dangerous because we don't read or write from this account
@@ -303,14 +297,15 @@ pub struct WhitelistDeposit<'info> {
 }
 
 #[derive(Accounts)]
-#[instruction(lockup_bump: u8)]
+#[instruction(lockup_nonce: u64)]
 pub struct WhitelistTransfer<'info> {
-    #[account(seeds = [b"lockup".as_ref()], bump = lockup_bump)]
+    #[account(
+        seeds = [b"lockup".as_ref(), &lockup_nonce.to_le_bytes()],
+        bump
+    )]
     lockup: Box<Account<'info, Lockup>>,
     // lockup: ProgramState<'info, Lockup>,
-    /// CHECK: This is not dangerous because we don't read or write from this account
-    #[account(signer)]
-    beneficiary: AccountInfo<'info>,
+    beneficiary: Signer<'info>,
     /// CHECK: This is not dangerous because we don't read or write from this account
     whitelisted_program: AccountInfo<'info>,
 
@@ -446,7 +441,7 @@ impl<'a, 'b, 'c, 'info> From<&mut CreateVesting<'info>>
         let cpi_accounts = Transfer {
             from: accounts.depositor.clone(),
             to: accounts.vault.to_account_info(),
-            authority: accounts.depositor_authority.clone(),
+            authority: accounts.depositor_authority.to_account_info().clone(),
         };
         let cpi_program = accounts.token_program.clone();
         CpiContext::new(cpi_program, cpi_accounts)

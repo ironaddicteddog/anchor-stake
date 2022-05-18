@@ -16,6 +16,5 @@ no-idl = []
 no-log-ix-name = []
 
 [dependencies]
-anchor-lang = "0.22.0"
-anchor-spl = "0.22.0"
-solana-program = "1.9.9"
+anchor-lang = "0.24.2"
+anchor-spl = "0.24.2"
